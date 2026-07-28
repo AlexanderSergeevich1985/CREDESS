@@ -5,6 +5,7 @@ import org.credess.model.SimulationReport;
 import org.credess.model.SimulationRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.credess.model.validator.ValidationResult;
+import org.credess.service.demotion.ProgressiveDemotionService;
 import org.credess.service.tasks.RedisTaskQueueService;
 import org.credess.service.validator.TripleGreenLightValidator;
 import org.springframework.data.redis.core.ZSetOperations;
@@ -38,6 +39,8 @@ public class CredessOrchestrationService {
     private final PythonCredessClient pythonClient;
     private final LlmAnalysisService llmService;
     private final TripleGreenLightValidator validator;
+    private final ProgressiveDemotionService demotionService;
+    private int failureCount = 0;
     private final ObjectMapper objectMapper;
 
     public CredessOrchestrationService(
@@ -45,11 +48,13 @@ public class CredessOrchestrationService {
             LlmAnalysisService llmService,
             RedisTaskQueueService redisQueueService,
             TripleGreenLightValidator validator,
+            ProgressiveDemotionService demotionService,
             ObjectMapper objectMapper) {
         this.pythonClient = pythonClient;
         this.llmService = llmService;
         this.redisQueueService = redisQueueService;
         this.validator = validator;
+        this.demotionService = demotionService;
         this.objectMapper = objectMapper;
     }
 
@@ -131,8 +136,12 @@ public class CredessOrchestrationService {
                 return String.format("SUCCESS: Agent %s locked task %s. Fee δt=%.2f burned. New balance: %.2f. Quality: %.2f",
                         agentId, targetTaskId, TRANSACTION_FEE, newBalance, validationResult.getQualityScore());
             } else {
-                return String.format("EXECUTION FAILED: Agent %s locked task %s but failed validation. Error: %s. Balance: %.2f",
-                        agentId, targetTaskId, validationResult.getErrorMessage(), newBalance);
+                // Task execution failed validation. Trigger Progressive Demotion Cascade (Eq. 15).
+                failureCount++;
+                String demotionResult = demotionService.executeDemotionCascade(agentId, failureCount);
+
+                return String.format("EXECUTION FAILED: Agent %s locked task %s but failed validation. %s",
+                        agentId, targetTaskId, demotionResult);
             }
 
         } else {

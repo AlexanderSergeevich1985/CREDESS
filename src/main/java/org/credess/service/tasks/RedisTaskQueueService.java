@@ -23,6 +23,7 @@ public class RedisTaskQueueService {
     private static final String QUEUE_PREFIX = "credess:queue:";
     private static final String LOCK_PREFIX = "credess:lock:";
     private static final String BALANCE_PREFIX = "credess:balance:";
+    private static final String AGENT_PREFIX = "credess:agent:";
 
     /**
      * Constructor injection for RedisTemplate.
@@ -169,5 +170,38 @@ public class RedisTaskQueueService {
         }
 
         return stats;
+    }
+
+    // Добавьте этот префикс в начало класса, если его нет:
+    // private static final String AGENT_PREFIX = "credess:agent:";
+
+    /**
+     * Saves or updates the agent's operational profile in Redis Hash.
+     * Stores role, layer, and current demotion stage.
+     *
+     * @param agentId The unique identifier of the agent.
+     * @param profileData A map of field-value pairs to update (e.g., "role", "Dev").
+     */
+    public void updateAgentProfile(String agentId, Map<String, String> profileData) {
+        String agentKey = AGENT_PREFIX + agentId;
+        redisTemplate.opsForHash().putAll(agentKey, profileData);
+    }
+
+    /**
+     * Retrieves the agent's operational profile from Redis Hash.
+     *
+     * @param agentId The unique identifier of the agent.
+     * @return A map containing the agent's role, layer, and demotion stage.
+     */
+    public Map<String, String> getAgentProfile(String agentId) {
+        String agentKey = AGENT_PREFIX + agentId;
+        // Fetch all fields from the hash
+        Map<Object, Object> entries = redisTemplate.opsForHash().entries(agentKey);
+
+        Map<String, String> profile = new HashMap<>();
+        for (Map.Entry<Object, Object> entry : entries.entrySet()) {
+            profile.put(entry.getKey().toString(), entry.getValue().toString());
+        }
+        return profile;
     }
 }
