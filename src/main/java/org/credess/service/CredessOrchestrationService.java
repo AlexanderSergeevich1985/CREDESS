@@ -4,7 +4,9 @@ import org.credess.client.PythonCredessClient;
 import org.credess.model.SimulationReport;
 import org.credess.model.SimulationRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.credess.model.artifact.ArtifactPassport;
 import org.credess.model.validator.ValidationResult;
+import org.credess.service.artifact.ArtifactPassportService;
 import org.credess.service.demotion.ProgressiveDemotionService;
 import org.credess.service.tasks.RedisTaskQueueService;
 import org.credess.service.tools.ToolRegistryService;
@@ -49,6 +51,7 @@ public class CredessOrchestrationService {
     private final ProgressiveDemotionService demotionService;
     private int failureCount = 0;
     private final ToolRegistryService toolRegistryService;
+    private final ArtifactPassportService passportService;
     private final ObjectMapper objectMapper;
 
     public CredessOrchestrationService(
@@ -58,6 +61,7 @@ public class CredessOrchestrationService {
             TripleGreenLightValidator validator,
             ProgressiveDemotionService demotionService,
             ToolRegistryService toolRegistryService,
+            ArtifactPassportService passportService,
             ObjectMapper objectMapper) {
         this.pythonClient = pythonClient;
         this.llmService = llmService;
@@ -65,6 +69,7 @@ public class CredessOrchestrationService {
         this.validator = validator;
         this.demotionService = demotionService;
         this.toolRegistryService = toolRegistryService;
+        this.passportService = passportService;
         this.objectMapper = objectMapper;
 
         this.agentParameterCounts = new HashMap<>();
@@ -184,31 +189,45 @@ public class CredessOrchestrationService {
     }
 
     /**
-     * Executes the Triple Green Light validation cascade (Section 4.6).
-     * Calculates the final local loss minimization objective Lagent (Eq. 29)
-     * and updates liquid capital balance (Eq. 30).
+     * Executes the Triple Green Light validation cascade with Artifact Passport tracking.
+     * Implements the bounded iterative execution loop (Section 4.6).
+     *
+     * If validation fails, the agent enters a closed self-correction loop,
+     * with each iteration logged into the passport until MaxIt is reached.
      */
     public ValidationResult executeTaskWithValidation(String taskId, String artifact, String agentId) {
-        // 1. Run Triple Green Light Cascade
-        ValidationResult result = validator.executeCascade(artifact);
-
-        // 2. Apply Resource Clearing and Liquidity Updates (Eq. 29, 30)
-        if (result.isPassed()) {
-            // Success: ξj* == 1
-            // Liquidity update: Liquidity + β * Bj * (1 - η * IterUsed/MaxIt) - τi,t
-            // (Simplified for this step)
-            double reward = 50.0; // Example base reward Bj
-            redisQueueService.burnTransactionFee(agentId, -reward); // Negative fee = reward
-
-            System.out.println("Task " + taskId + " PASSED Triple Green Light. Quality: " + result.getQualityScore());
+        // 1. Create or retrieve the Artifact Passport
+        ArtifactPassport passport;
+        if (!passportService.hasPassport(taskId)) {
+            passport = passportService.createPassport(taskId, agentId);
         } else {
-            // Failure: ξj* == 0
-            // Triggers closed self-correction loop and progressive demotion
-            // Liquidity update: - τi,t - Penaltyfail
-            double penalty = 20.0;
-            redisQueueService.burnTransactionFee(agentId, penalty);
+            passport = passportService.getPassport(taskId);
+            passportService.transferToAgent(taskId, agentId);
+        }
 
-            System.out.println("Task " + taskId + " FAILED at Barrier. Error: " + result.getErrorMessage());
+        // 2. Check iteration limit (MaxIt) — hard ticket failure condition
+        if (passport.isIterationLimitExceeded()) {
+            passportService.finalizePassport(taskId, ArtifactPassport.PassportStatus.FAILED_ITERATION_LIMIT);
+            return ValidationResult.failure(
+                    "MaxIt exceeded (" + passport.getMaxIterations() + "). " +
+                            "Passport contains " + passport.getDockerLogs().size() + " Docker errors, " +
+                            passport.getFunctionalErrors().size() + " functional errors, " +
+                            passport.getSemanticFeedback().size() + " semantic feedbacks."
+            );
+        }
+
+        // 3. Increment iteration counter for this self-correction cycle
+        passportService.incrementIteration(taskId);
+
+        // 4. Execute the Triple Green Light cascade (with automatic passport logging)
+        ValidationResult result = validator.executeCascade(taskId, artifact);
+
+        // 5. Update passport based on outcome
+        if (result.isPassed()) {
+            passportService.finalizePassport(taskId, ArtifactPassport.PassportStatus.PASSED);
+        } else {
+            // Log token consumption for this failed iteration
+            passportService.addTokensConsumed(taskId, 10.0); // Example token cost per iteration
         }
 
         return result;
@@ -285,6 +304,13 @@ public class CredessOrchestrationService {
 
         return String.format("SUCCESS: Agent %s leased tool '%s'. Total cost (Eq. 16): %.2f. New balance: %.2f",
                 agentId, toolId, totalCost, newBalance);
+    }
+
+    /**
+     * Retrieves the Artifact Passport for a task (for monitoring or replacement agent context).
+     */
+    public ArtifactPassport getTaskPassport(String taskId) {
+        return passportService.getPassport(taskId);
     }
 
     /**

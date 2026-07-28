@@ -2,12 +2,15 @@ package org.credess.controller;
 
 import org.credess.model.SimulationReport;
 import org.credess.model.SimulationRequest;
+import org.credess.model.artifact.ArtifactPassport;
 import org.credess.service.CredessOrchestrationService;
+import org.credess.service.artifact.ArtifactPassportService;
 import org.credess.service.tasks.RedisTaskQueueService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -20,11 +23,14 @@ public class CredessController {
 
     private final CredessOrchestrationService orchestrationService;
     private final RedisTaskQueueService redisQueueService;
+    private final ArtifactPassportService passportService;
 
     public CredessController(CredessOrchestrationService orchestrationService,
-                             RedisTaskQueueService redisQueueService) {
+                             RedisTaskQueueService redisQueueService,
+                             ArtifactPassportService passportService) {
         this.orchestrationService = orchestrationService;
         this.redisQueueService = redisQueueService;
+        this.passportService = passportService;
     }
 
     /**
@@ -251,6 +257,51 @@ public class CredessController {
         Map<String, Object> response = new HashMap<>();
         response.put("available_tools", tools);
         response.put("mechanism", "Dynamic Tool Procurement Economy (Eq. 16)");
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Retrieves the Artifact Passport for a specific task.
+     * Provides full tactical context for replacement agents or monitoring dashboards.
+     */
+    @GetMapping("/task/{taskId}/passport")
+    public ResponseEntity<Map<String, Object>> getTaskPassport(@PathVariable String taskId) {
+        ArtifactPassport passport = orchestrationService.getTaskPassport(taskId);
+
+        if (passport == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("passport_id", passport.getPassportId());
+        response.put("task_id", passport.getTaskId());
+        response.put("current_agent_id", passport.getCurrentAgentId());
+        response.put("status", passport.getStatus().name());
+        response.put("iteration_count", passport.getIterationCount());
+        response.put("max_iterations", passport.getMaxIterations());
+        response.put("total_tokens_consumed", passport.getTotalTokensConsumed());
+        response.put("average_quality_score", passport.getAverageQualityScore());
+        response.put("docker_logs", passport.getDockerLogs());
+        response.put("functional_errors", passport.getFunctionalErrors());
+        response.put("semantic_feedback", passport.getSemanticFeedback());
+        response.put("quality_vector", passport.getQualityVector());
+        response.put("created_at", passport.getCreatedAt());
+        response.put("updated_at", passport.getUpdatedAt());
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Lists all tasks that have active Artifact Passports.
+     */
+    @GetMapping("/passports/active")
+    public ResponseEntity<Map<String, Object>> getActivePassports() {
+        List<String> taskIds = passportService.getAllPassportTaskIds();
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("active_passports_count", taskIds.size());
+        response.put("task_ids", taskIds);
 
         return ResponseEntity.ok(response);
     }
