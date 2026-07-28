@@ -4,7 +4,9 @@ import org.credess.client.PythonCredessClient;
 import org.credess.model.SimulationReport;
 import org.credess.model.SimulationRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.credess.model.validator.ValidationResult;
 import org.credess.service.tasks.RedisTaskQueueService;
+import org.credess.service.validator.TripleGreenLightValidator;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
@@ -35,16 +37,19 @@ public class CredessOrchestrationService {
     private final RedisTaskQueueService redisQueueService;
     private final PythonCredessClient pythonClient;
     private final LlmAnalysisService llmService;
+    private final TripleGreenLightValidator validator;
     private final ObjectMapper objectMapper;
 
     public CredessOrchestrationService(
             PythonCredessClient pythonClient,
             LlmAnalysisService llmService,
             RedisTaskQueueService redisQueueService,
+            TripleGreenLightValidator validator,
             ObjectMapper objectMapper) {
         this.pythonClient = pythonClient;
         this.llmService = llmService;
         this.redisQueueService = redisQueueService;
+        this.validator = validator;
         this.objectMapper = objectMapper;
     }
 
@@ -116,15 +121,18 @@ public class CredessOrchestrationService {
             double newBalance = redisQueueService.burnTransactionFee(agentId, TRANSACTION_FEE);
 
             // Simulate task execution and release lock afterwards
-            boolean executionSuccess = simulateTaskExecution(targetTaskId);
+            String simulatedArtifact = "print('Hello from agent " + agentId + "')";
+            ValidationResult validationResult = executeTaskWithValidation(targetTaskId, simulatedArtifact, agentId);
+
+            boolean executionSuccess = validationResult.isPassed();
             redisQueueService.releaseLock(targetTaskId, agentId);
 
             if (executionSuccess) {
-                return String.format("SUCCESS: Agent %s locked task %s. Fee δt=%.2f burned. New balance: %.2f",
-                        agentId, targetTaskId, TRANSACTION_FEE, newBalance);
+                return String.format("SUCCESS: Agent %s locked task %s. Fee δt=%.2f burned. New balance: %.2f. Quality: %.2f",
+                        agentId, targetTaskId, TRANSACTION_FEE, newBalance, validationResult.getQualityScore());
             } else {
-                return String.format("EXECUTION FAILED: Agent %s locked task %s but failed validation. Balance: %.2f",
-                        agentId, targetTaskId, newBalance);
+                return String.format("EXECUTION FAILED: Agent %s locked task %s but failed validation. Error: %s. Balance: %.2f",
+                        agentId, targetTaskId, validationResult.getErrorMessage(), newBalance);
             }
 
         } else {
@@ -154,13 +162,34 @@ public class CredessOrchestrationService {
     }
 
     /**
-     * Simulates the "Triple Green Light" validation cascade (Section 4.2).
-     * Returns true if the artifact passes syntactic, functional, and semantic barriers.
+     * Executes the Triple Green Light validation cascade (Section 4.6).
+     * Calculates the final local loss minimization objective Lagent (Eq. 29)
+     * and updates liquid capital balance (Eq. 30).
      */
-    private boolean simulateTaskExecution(String taskId) {
-        // Placeholder for Docker sandbox, Digital Twin, and LLM Judges validation
-        // In a real implementation, this would call the Python FastAPI service or internal Java logic.
-        return Math.random() > 0.2; // 80% success rate for simulation
+    public ValidationResult executeTaskWithValidation(String taskId, String artifact, String agentId) {
+        // 1. Run Triple Green Light Cascade
+        ValidationResult result = validator.executeCascade(artifact);
+
+        // 2. Apply Resource Clearing and Liquidity Updates (Eq. 29, 30)
+        if (result.isPassed()) {
+            // Success: ξj* == 1
+            // Liquidity update: Liquidity + β * Bj * (1 - η * IterUsed/MaxIt) - τi,t
+            // (Simplified for this step)
+            double reward = 50.0; // Example base reward Bj
+            redisQueueService.burnTransactionFee(agentId, -reward); // Negative fee = reward
+
+            System.out.println("Task " + taskId + " PASSED Triple Green Light. Quality: " + result.getQualityScore());
+        } else {
+            // Failure: ξj* == 0
+            // Triggers closed self-correction loop and progressive demotion
+            // Liquidity update: - τi,t - Penaltyfail
+            double penalty = 20.0;
+            redisQueueService.burnTransactionFee(agentId, penalty);
+
+            System.out.println("Task " + taskId + " FAILED at Barrier. Error: " + result.getErrorMessage());
+        }
+
+        return result;
     }
 
     /**
