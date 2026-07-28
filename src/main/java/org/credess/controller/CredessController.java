@@ -216,4 +216,42 @@ public class CredessController {
 
         return ResponseEntity.ok(response);
     }
+
+    /**
+     * Allows an agent to lease a tool from the infrastructure registry.
+     * Triggers the economic friction mechanism and deducts the cost (Eq. 16).
+     */
+    @PostMapping("/agent/{agentId}/lease-tool")
+    public ResponseEntity<Map<String, Object>> leaseTool(
+            @PathVariable String agentId,
+            @RequestParam String toolId) {
+
+        String result = orchestrationService.procureTool(agentId, toolId);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", result.startsWith("SUCCESS") ? "success" : "failed");
+        response.put("message", result);
+        response.put("current_balance", redisQueueService.getAgentBalance(agentId));
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Lists all available tools in the infrastructure registry and their procurement fees.
+     */
+    @GetMapping("/tools/registry")
+    public ResponseEntity<Map<String, Object>> getToolRegistry() {
+        // For simplicity, returning a static map. In production, fetch from Redis Hash.
+        Map<String, Double> tools = new HashMap<>();
+        tools.put("docker-sandbox", 15.0);
+        tools.put("sql-compiler", 10.0);
+        tools.put("json-parser", 5.0);
+        tools.put("git-plugin", 20.0);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("available_tools", tools);
+        response.put("mechanism", "Dynamic Tool Procurement Economy (Eq. 16)");
+
+        return ResponseEntity.ok(response);
+    }
 }

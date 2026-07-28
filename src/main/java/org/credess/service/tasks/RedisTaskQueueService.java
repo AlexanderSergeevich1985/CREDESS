@@ -354,4 +354,57 @@ public class RedisTaskQueueService {
         Double totalBurned = (Double) redisTemplate.opsForValue().get(globalBurnKey);
         return totalBurned != null ? totalBurned : 0.0;
     }
+
+    /**
+     * Calculates the total effective computational inference cost C_{i,t}(R_k)
+     * as defined in Equation 16 (Section 4.3).
+     *
+     * This cost includes the base parameter tariff, the context window tax,
+     * and the dynamic tool procurement fee if a tool is leased.
+     *
+     * @param parameterCountBillions (Ni) The agent's model parameter count in billions.
+     * @param gamma (γ) The fixed parameter tariff rate.
+     * @param lambda (λ) The context multiplier coefficient.
+     * @param specializationPacketSize Size of the role's specialization packet.
+     * @param contextLimit The agent's maximum context window size.
+     * @param toolCost (C_tool) The procurement fee for the leased tool.
+     * @param isToolUsed (I(Tool Used == 1)) Indicator function: 1.0 if tool is leased, 0.0 otherwise.
+     * @return The total calculated inference cost.
+     */
+    public double calculateTotalInferenceCost(
+            double parameterCountBillions,
+            double gamma,
+            double lambda,
+            double specializationPacketSize,
+            double contextLimit,
+            double toolCost,
+            boolean isToolUsed) {
+
+        // Base computational cost: (γ * Ni) * (1 + λ * (PacketSize / ContextLimit))
+        double baseCost = (gamma * parameterCountBillions) *
+                (1.0 + lambda * (specializationPacketSize / contextLimit));
+
+        // Tool procurement cost: C_tool(Rk) * I(Tool Used == 1)
+        double procurementCost = toolCost * (isToolUsed ? 1.0 : 0.0);
+
+        return baseCost + procurementCost;
+    }
+
+    /**
+     * Deducts the total calculated inference cost from the agent's balance.
+     *
+     * @param agentId The unique identifier of the agent.
+     * @param totalCost The cost calculated via calculateTotalInferenceCost.
+     * @return The new balance of the agent.
+     */
+    public double deductInferenceCost(String agentId, double totalCost) {
+        String balanceKey = BALANCE_PREFIX + agentId;
+        Double newBalance = redisTemplate.opsForValue().increment(balanceKey, -totalCost);
+
+        if (newBalance != null && newBalance < 0) {
+            redisTemplate.opsForValue().set(balanceKey, 0.0);
+            return 0.0;
+        }
+        return newBalance != null ? newBalance : 0.0;
+    }
 }

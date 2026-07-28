@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.credess.model.validator.ValidationResult;
 import org.credess.service.demotion.ProgressiveDemotionService;
 import org.credess.service.tasks.RedisTaskQueueService;
+import org.credess.service.tools.ToolRegistryService;
 import org.credess.service.validator.TripleGreenLightValidator;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -47,6 +48,7 @@ public class CredessOrchestrationService {
     private final TripleGreenLightValidator validator;
     private final ProgressiveDemotionService demotionService;
     private int failureCount = 0;
+    private final ToolRegistryService toolRegistryService;
     private final ObjectMapper objectMapper;
 
     public CredessOrchestrationService(
@@ -55,12 +57,14 @@ public class CredessOrchestrationService {
             RedisTaskQueueService redisQueueService,
             TripleGreenLightValidator validator,
             ProgressiveDemotionService demotionService,
+            ToolRegistryService toolRegistryService,
             ObjectMapper objectMapper) {
         this.pythonClient = pythonClient;
         this.llmService = llmService;
         this.redisQueueService = redisQueueService;
         this.validator = validator;
         this.demotionService = demotionService;
+        this.toolRegistryService = toolRegistryService;
         this.objectMapper = objectMapper;
 
         this.agentParameterCounts = new HashMap<>();
@@ -243,6 +247,44 @@ public class CredessOrchestrationService {
      */
     public Set<String> getRegisteredAgentIds() {
         return agentParameterCounts.keySet();
+    }
+
+    /**
+     * Simulates an agent requesting and leasing an external tool.
+     * Calculates the total cost using Eq. 16 and deducts it from the agent's balance.
+     *
+     * @param agentId The unique identifier of the agent.
+     * @param toolId The identifier of the requested tool.
+     * @return A string describing the outcome of the tool procurement.
+     */
+    public String procureTool(String agentId, String toolId) {
+        double currentBalance = redisQueueService.getAgentBalance(agentId);
+
+        // 1. Check if agent can afford the tool (Economic friction)
+        if (!toolRegistryService.leaseTool(agentId, toolId, currentBalance)) {
+            return String.format("PROCUREMENT FAILED: Agent %s has insufficient liquidity (%.2f) to lease tool '%s'.",
+                    agentId, currentBalance, toolId);
+        }
+
+        // 2. Calculate total inference cost using Equation 16
+        // Hyperparameters from the paper (Section 4.3)
+        double Ni = 7.0; // Example: 7 Billion parameters
+        double gamma = 2.0; // Fixed parameter tariff rate
+        double lambda = 0.5; // Context multiplier
+        double packetSize = 1024.0; // Size of Specialization Packet
+        double contextLimit = 8192.0; // Context Limit
+        double toolCost = toolRegistryService.getToolCost(toolId);
+        boolean isToolUsed = true; // I(Tool Used == 1)
+
+        double totalCost = redisQueueService.calculateTotalInferenceCost(
+                Ni, gamma, lambda, packetSize, contextLimit, toolCost, isToolUsed
+        );
+
+        // 3. Deduct the cost from the agent's liquid balance
+        double newBalance = redisQueueService.deductInferenceCost(agentId, totalCost);
+
+        return String.format("SUCCESS: Agent %s leased tool '%s'. Total cost (Eq. 16): %.2f. New balance: %.2f",
+                agentId, toolId, totalCost, newBalance);
     }
 
     /**
