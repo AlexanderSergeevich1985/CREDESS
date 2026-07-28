@@ -9,9 +9,12 @@ import org.credess.service.demotion.ProgressiveDemotionService;
 import org.credess.service.tasks.RedisTaskQueueService;
 import org.credess.service.validator.TripleGreenLightValidator;
 import org.springframework.data.redis.core.ZSetOperations;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -35,6 +38,9 @@ public class CredessOrchestrationService {
     // Local interaction radius rfield (Eq. 18)
     private static final double R_FIELD = 2.0;
 
+    // Ni for each agent
+    private final Map<String, Double> agentParameterCounts;
+
     private final RedisTaskQueueService redisQueueService;
     private final PythonCredessClient pythonClient;
     private final LlmAnalysisService llmService;
@@ -56,6 +62,13 @@ public class CredessOrchestrationService {
         this.validator = validator;
         this.demotionService = demotionService;
         this.objectMapper = objectMapper;
+
+        this.agentParameterCounts = new HashMap<>();
+
+        // Initialize with example parameter counts (in billions)
+        // In production, this would come from agent registration
+        this.agentParameterCounts.put("Agent_A1", 7.0);
+        this.agentParameterCounts.put("Agent_A2", 13.0);
     }
 
     /**
@@ -199,6 +212,41 @@ public class CredessOrchestrationService {
         }
 
         return result;
+    }
+
+    /**
+     * Periodically refills all active agent buckets based on dynamic refill rates.
+     * Runs every 1000 milliseconds (1 second) to simulate the passage of time (Δt).
+     * Corresponds to the macroeconomic regulation cycle in Section 4.7 (Eq. 34).
+     */
+    @Scheduled(fixedRate = 1000) // Executes every 1 second
+    public void refillAllActiveAgents() {
+        for (Map.Entry<String, Double> entry : agentParameterCounts.entrySet()) {
+            String agentId = entry.getKey();
+            double paramCount = entry.getValue();
+
+            // Assume sandbox is valid unless marked otherwise
+            boolean sandboxValid = true;
+
+            double tokensAdded = redisQueueService.refillAgentBucket(
+                    agentId,
+                    paramCount,
+                    sandboxValid,
+                    1.0 // timeDelta = 1 second
+            );
+
+            if (tokensAdded > 0) {
+                System.out.printf("Agent %s: Refilled %.2f tokens (New balance: %.2f)%n",
+                        agentId, tokensAdded, redisQueueService.getAgentBalance(agentId));
+            }
+        }
+    }
+
+    /**
+     * Returns the list of currently registered agent IDs.
+     */
+    public Set<String> getRegisteredAgentIds() {
+        return agentParameterCounts.keySet();
     }
 
     /**

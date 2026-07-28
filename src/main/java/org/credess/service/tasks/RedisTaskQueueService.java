@@ -16,6 +16,10 @@ import java.util.concurrent.TimeUnit;
  */
 @Service
 public class RedisTaskQueueService {
+    // Governance regularization hyperparameter (αgov)
+    private static final double ALPHA_GOV = 0.01;
+    // Base refill rate
+    private static final double RHO_BASE = 10.0;
 
     private final RedisTemplate<String, Object> redisTemplate;
 
@@ -203,5 +207,105 @@ public class RedisTaskQueueService {
             profile.put(entry.getKey().toString(), entry.getValue().toString());
         }
         return profile;
+    }
+
+    /**
+     * Calculates the dynamic token bucket refill rate ρi,t with exponential penalty
+     * as described in Equation 33 of the CREDESS paper (Section 4.7).
+     *
+     * This mechanism prevents token hoarding by agents that do not execute tasks,
+     * and aggressively penalizes idle, high-overhead networks.
+     *
+     * Formula: ρi,t = ρbase · exp(−αgov · Liquidityi,t · (Ni + 1)) · I(Sandbox Status== Valid)
+     *
+     * @param agentId The unique identifier of the agent
+     * @param parameterCountBillions The agent's model parameter count in billions (Ni)
+     * @param sandboxStatusValid Whether the agent's sandbox status is valid
+     * @return The calculated refill rate ρi,t (tokens per second)
+     */
+    public double calculateDynamicRefillRate(String agentId, double parameterCountBillions, boolean sandboxStatusValid) {
+        // If sandbox status is invalid, refill rate is zero (Eq. 33 indicator function)
+        if (!sandboxStatusValid) {
+            return 0.0;
+        }
+
+        // Get current liquidity balance
+        double currentLiquidity = getAgentBalance(agentId);
+
+        // Calculate exponential penalty factor
+        // exp(−αgov · Liquidityi,t · (Ni + 1))
+        double penaltyExponent = -ALPHA_GOV * currentLiquidity * (parameterCountBillions + 1.0);
+        double exponentialPenalty = Math.exp(penaltyExponent);
+
+        // Final refill rate: ρbase · exp(...)
+        double refillRate = RHO_BASE * exponentialPenalty;
+
+        // Store the calculated refill rate in Redis for monitoring
+        String refillRateKey = "credess:refill_rate:" + agentId;
+        redisTemplate.opsForValue().set(refillRateKey, String.valueOf(refillRate));
+
+        return refillRate;
+    }
+
+    /**
+     * Refills the agent's token bucket based on the dynamic refill rate.
+     * Should be called periodically (e.g., every second) for active agents.
+     *
+     * @param agentId The unique identifier of the agent
+     * @param parameterCountBillions The agent's model parameter count in billions
+     * @param sandboxStatusValid Whether the agent's sandbox status is valid
+     * @param timeDelta The time elapsed since last refill (in seconds)
+     * @return The amount of tokens added to the bucket
+     */
+    public double refillAgentBucket(String agentId, double parameterCountBillions, boolean sandboxStatusValid, double timeDelta) {
+        double refillRate = calculateDynamicRefillRate(agentId, parameterCountBillions, sandboxStatusValid);
+        double tokensToAdd = refillRate * timeDelta;
+
+        if (tokensToAdd > 0) {
+            String balanceKey = BALANCE_PREFIX + agentId;
+
+            // Atomically increment the balance
+            Double newBalance = redisTemplate.opsForValue().increment(balanceKey, tokensToAdd);
+
+            // Ensure balance doesn't exceed max bucket capacity (if stored)
+            String maxBucketKey = "credess:max_bucket:" + agentId;
+            Double maxBucket = (Double) redisTemplate.opsForValue().get(maxBucketKey);
+
+            if (maxBucket != null && newBalance != null && newBalance > maxBucket) {
+                redisTemplate.opsForValue().set(balanceKey, String.valueOf(maxBucket));
+                return maxBucket - (newBalance - tokensToAdd); // Return actual tokens added
+            }
+
+            return tokensToAdd;
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * Sets the maximum bucket capacity for an agent based on their credit score
+     * as described in Equation 6 of the paper.
+     *
+     * Formula: Bucket_max = B_base · (1 + γ · CS / 100)
+     *
+     * @param agentId The unique identifier of the agent
+     * @param creditScore The agent's current credit score
+     * @param baseCapacity The base bucket capacity (B_base)
+     * @param gamma The credit-scaling coefficient (γ)
+     */
+    public void updateMaxBucketCapacity(String agentId, double creditScore, double baseCapacity, double gamma) {
+        double maxBucket = baseCapacity * (1.0 + gamma * creditScore / 100.0);
+
+        String maxBucketKey = "credess:max_bucket:" + agentId;
+        redisTemplate.opsForValue().set(maxBucketKey, String.valueOf(maxBucket));
+    }
+
+    /**
+     * Retrieves the current refill rate for monitoring purposes.
+     */
+    public double getAgentRefillRate(String agentId) {
+        String refillRateKey = "credess:refill_rate:" + agentId;
+        String value = (String) redisTemplate.opsForValue().get(refillRateKey);
+        return value != null ? Double.parseDouble(value) : 0.0;
     }
 }

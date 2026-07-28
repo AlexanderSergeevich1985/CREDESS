@@ -132,4 +132,71 @@ public class CredessController {
 
         return ResponseEntity.ok(response);
     }
+
+    /**
+     * Calculates and returns the dynamic refill rate for a specific agent.
+     */
+    @GetMapping("/agent/{agentId}/refill-rate")
+    public ResponseEntity<Map<String, Object>> getAgentRefillRate(
+            @PathVariable String agentId,
+            @RequestParam(defaultValue = "7.0") double paramCountBillions) {
+
+        double refillRate = redisQueueService.calculateDynamicRefillRate(
+                agentId, paramCountBillions, true
+        );
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("agent_id", agentId);
+        response.put("parameter_count_b", paramCountBillions);
+        response.put("current_balance", redisQueueService.getAgentBalance(agentId));
+        response.put("refill_rate", refillRate);
+        response.put("formula", "ρi,t = ρbase · exp(−αgov · Liquidity · (Ni + 1))");
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Manually triggers a bucket refill for testing purposes.
+     */
+    @PostMapping("/agent/{agentId}/refill")
+    public ResponseEntity<Map<String, Object>> triggerRefill(
+            @PathVariable String agentId,
+            @RequestParam(defaultValue = "7.0") double paramCountBillions) {
+
+        double tokensAdded = redisQueueService.refillAgentBucket(
+                agentId, paramCountBillions, true, 1.0
+        );
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("agent_id", agentId);
+        response.put("tokens_added", tokensAdded);
+        response.put("new_balance", redisQueueService.getAgentBalance(agentId));
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Advances the simulation by one epoch (Δt).
+     * Triggers the macroeconomic refill cycle and returns the updated system state.
+     * Corresponds to the discrete time-step execution in Section 4.7.
+     */
+    @PostMapping("/epoch/advance")
+    public ResponseEntity<Map<String, Object>> advanceEpoch() {
+        // 1. Trigger the refill cycle for all registered agents
+        orchestrationService.refillAllActiveAgents();
+
+        // 2. Gather current state for the response
+        Map<String, Object> epochState = new HashMap<>();
+        epochState.put("timestamp", System.currentTimeMillis());
+        epochState.put("message", "Epoch advanced. Token buckets refilled based on Eq. 33.");
+
+        // Add balances of all known agents
+        Map<String, Double> balances = new HashMap<>();
+        for (String agentId : orchestrationService.getRegisteredAgentIds()) {
+            balances.put(agentId, redisQueueService.getAgentBalance(agentId));
+        }
+        epochState.put("agent_balances", balances);
+
+        return ResponseEntity.ok(epochState);
+    }
 }
