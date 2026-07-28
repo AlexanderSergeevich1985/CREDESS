@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  python-service:
+    build: ./python-service
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  java-service:
+    build: ./java-service
+    ports:
+      - "8080:8080"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CREEDESS_PYTHON_SERVICE_URL=http://python-service:8000
+    depends_on:
+      python-service:
+        condition: service_healthy
