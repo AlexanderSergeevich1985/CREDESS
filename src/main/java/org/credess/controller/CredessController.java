@@ -5,6 +5,7 @@ import org.credess.model.SimulationRequest;
 import org.credess.model.artifact.ArtifactPassport;
 import org.credess.service.CredessOrchestrationService;
 import org.credess.service.artifact.ArtifactPassportService;
+import org.credess.service.policy.LayerIsolatedPolicyTransplantationService;
 import org.credess.service.prompt.PromptCompilerService;
 import org.credess.service.rag.VectorialRagBufferService;
 import org.credess.service.tasks.RedisTaskQueueService;
@@ -29,17 +30,20 @@ public class CredessController {
     private final ArtifactPassportService passportService;
     private final VectorialRagBufferService ragBufferService;
     private final PromptCompilerService promptCompilerService;
+    private final LayerIsolatedPolicyTransplantationService transplantationService;
 
     public CredessController(CredessOrchestrationService orchestrationService,
                              RedisTaskQueueService redisQueueService,
                              ArtifactPassportService passportService,
                              VectorialRagBufferService ragBufferService,
-                             PromptCompilerService promptCompilerService) {
+                             PromptCompilerService promptCompilerService,
+                             LayerIsolatedPolicyTransplantationService transplantationService) {
         this.orchestrationService = orchestrationService;
         this.redisQueueService = redisQueueService;
         this.passportService = passportService;
         this.ragBufferService = ragBufferService;
         this.promptCompilerService = promptCompilerService;
+        this.transplantationService = transplantationService;
     }
 
     /**
@@ -350,6 +354,48 @@ public class CredessController {
         response.put("task_id", taskId);
         response.put("compiled_prompt", compiledPrompt);
         response.put("context_length_chars", compiledPrompt.length());
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Simulates the Validator Court intervention for Layer-Isolated Policy Transplantation (Section 4.8).
+     * If the layer's success rate drops below the critical threshold, the elite agent's policy
+     * is hot-reloaded into all peer nodes within the same layer.
+     */
+    @PostMapping("/meta-learning/transplant")
+    public ResponseEntity<Map<String, Object>> triggerTransplantation(
+            @RequestParam String layer,
+            @RequestParam double currentSuccessRate,
+            @RequestParam(defaultValue = "0.8") double criticalThreshold) {
+
+        transplantationService.evaluateAndTransplant(layer, currentSuccessRate, criticalThreshold);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "evaluated");
+        response.put("layer", layer);
+        response.put("success_rate", currentSuccessRate);
+        response.put("threshold", criticalThreshold);
+        response.put("elite_agent", transplantationService.findEliteAgent(layer));
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Saves a mock policy for an agent (for testing purposes).
+     */
+    @PostMapping("/meta-learning/save-policy")
+    public ResponseEntity<Map<String, Object>> savePolicy(
+            @RequestParam String agentId,
+            @RequestParam String layer,
+            @RequestParam String policyText) {
+
+        transplantationService.registerAgentToLayer(agentId, layer);
+        transplantationService.saveAgentPolicy(agentId, policyText);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "success");
+        response.put("message", "Policy saved and agent registered to layer " + layer);
 
         return ResponseEntity.ok(response);
     }
