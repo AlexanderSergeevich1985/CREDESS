@@ -5,10 +5,13 @@ import org.credess.model.SimulationRequest;
 import org.credess.model.artifact.ArtifactPassport;
 import org.credess.service.CredessOrchestrationService;
 import org.credess.service.artifact.ArtifactPassportService;
+import org.credess.service.prompt.PromptCompilerService;
+import org.credess.service.rag.VectorialRagBufferService;
 import org.credess.service.tasks.RedisTaskQueueService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,13 +27,19 @@ public class CredessController {
     private final CredessOrchestrationService orchestrationService;
     private final RedisTaskQueueService redisQueueService;
     private final ArtifactPassportService passportService;
+    private final VectorialRagBufferService ragBufferService;
+    private final PromptCompilerService promptCompilerService;
 
     public CredessController(CredessOrchestrationService orchestrationService,
                              RedisTaskQueueService redisQueueService,
-                             ArtifactPassportService passportService) {
+                             ArtifactPassportService passportService,
+                             VectorialRagBufferService ragBufferService,
+                             PromptCompilerService promptCompilerService) {
         this.orchestrationService = orchestrationService;
         this.redisQueueService = redisQueueService;
         this.passportService = passportService;
+        this.ragBufferService = ragBufferService;
+        this.promptCompilerService = promptCompilerService;
     }
 
     /**
@@ -302,6 +311,45 @@ public class CredessController {
         Map<String, Object> response = new HashMap<>();
         response.put("active_passports_count", taskIds.size());
         response.put("task_ids", taskIds);
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Stores a professional insight into the Vectorial RAG Buffer (Section 4.2).
+     */
+    @PostMapping("/rag/store")
+    public ResponseEntity<Map<String, Object>> storeRagInsight(
+            @RequestParam List<String> tags,
+            @RequestParam String text,
+            @RequestParam String agentId) {
+
+        String id = ragBufferService.storeInsight(tags, text, agentId);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("status", "success");
+        response.put("insight_id", id);
+        response.put("message", "Insight atomized and indexed by tags: " + tags);
+
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Compiles the final prompt payload using the Prompt Compiler (Section 4.9).
+     */
+    @GetMapping("/task/{taskId}/compile-prompt")
+    public ResponseEntity<Map<String, Object>> compilePrompt(
+            @PathVariable String taskId,
+            @RequestParam(defaultValue = "You are an expert Python developer.") String rolePrompt,
+            @RequestParam(defaultValue = "#fastapi,#sql") String tags) {
+
+        List<String> tagList = Arrays.asList(tags.split(","));
+        String compiledPrompt = promptCompilerService.compilePrompt(taskId, rolePrompt, tagList);
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("task_id", taskId);
+        response.put("compiled_prompt", compiledPrompt);
+        response.put("context_length_chars", compiledPrompt.length());
 
         return ResponseEntity.ok(response);
     }
