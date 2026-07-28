@@ -135,10 +135,11 @@ public class CredessOrchestrationService {
 
         if (casSuccess) {
             // 4. CAS Transaction Succeeded
-            // Burn invariant transaction fee δt from agent's liquid balance (Anti-spam cost regulator)
-            double newBalance = redisQueueService.burnTransactionFee(agentId, TRANSACTION_FEE);
+            // Burn invariant transaction fee δt from agent's liquid balance (Eq. 20, 34).
+            // This acts as an anti-spam cost regulator and deflationary stabilizing shock.
+            double newBalance = redisQueueService.burnInvariantTransactionFee(agentId);
 
-            // Simulate task execution and release lock afterwards
+            // Simulate task execution and release lock afterward
             String simulatedArtifact = "print('Hello from agent " + agentId + "')";
             ValidationResult validationResult = executeTaskWithValidation(targetTaskId, simulatedArtifact, agentId);
 
@@ -146,17 +147,12 @@ public class CredessOrchestrationService {
             redisQueueService.releaseLock(targetTaskId, agentId);
 
             if (executionSuccess) {
-                return String.format("SUCCESS: Agent %s locked task %s. Fee δt=%.2f burned. New balance: %.2f. Quality: %.2f",
-                        agentId, targetTaskId, TRANSACTION_FEE, newBalance, validationResult.getQualityScore());
+                return String.format("SUCCESS: Agent %s locked task %s. Invariant fee δt=%.2f burned. New balance: %.2f. Quality: %.2f",
+                        agentId, targetTaskId, 2.0, newBalance, validationResult.getQualityScore());
             } else {
-                // Task execution failed validation. Trigger Progressive Demotion Cascade (Eq. 15).
-                failureCount++;
-                String demotionResult = demotionService.executeDemotionCascade(agentId, failureCount);
-
-                return String.format("EXECUTION FAILED: Agent %s locked task %s but failed validation. %s",
-                        agentId, targetTaskId, demotionResult);
+                return String.format("EXECUTION FAILED: Agent %s locked task %s but failed validation. Fee δt already burned (Eq. 20). Error: %s. Balance: %.2f",
+                        agentId, targetTaskId, validationResult.getErrorMessage(), newBalance);
             }
-
         } else {
             // 5. CAS Transaction Failed (Race Condition)
             // The transaction aborts WITHOUT penalty, and the agent targets the next fallback task.

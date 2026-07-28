@@ -199,4 +199,21 @@ public class CredessController {
 
         return ResponseEntity.ok(epochState);
     }
+
+    /**
+     * Returns macroeconomic metrics regarding the deflationary stabilizing shock.
+     * Tracks the total amount of invariant transaction fees (δt) burned system-wide.
+     * Corresponds to the anti-spam and sybil-protection metrics in Section 5.2.3.
+     *
+     * @return A map containing the total burned fees and the current invariant fee value.
+     */
+    @GetMapping("/metrics/deflation")
+    public ResponseEntity<Map<String, Object>> getDeflationMetrics() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("invariant_fee_delta_t", 2.0);
+        response.put("total_burned_fees", redisQueueService.getTotalBurnedFees());
+        response.put("mechanism", "Deflationary stabilizing shock (Eq. 34)");
+
+        return ResponseEntity.ok(response);
+    }
 }

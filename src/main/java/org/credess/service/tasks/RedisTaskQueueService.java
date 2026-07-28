@@ -20,6 +20,12 @@ public class RedisTaskQueueService {
     private static final double ALPHA_GOV = 0.01;
     // Base refill rate
     private static final double RHO_BASE = 10.0;
+    /**
+     * Invariant transaction fee δt (Eq. 20, 34).
+     * Permanently burned from the agent's liquid balance upon successful CAS lock.
+     * Acts as an anti-spam cost regulator and deflationary stabilizing shock.
+     */
+    private static final double DELTA_T = 2.0;
 
     private final RedisTemplate<String, Object> redisTemplate;
 
@@ -28,6 +34,7 @@ public class RedisTaskQueueService {
     private static final String LOCK_PREFIX = "credess:lock:";
     private static final String BALANCE_PREFIX = "credess:balance:";
     private static final String AGENT_PREFIX = "credess:agent:";
+    private static final String METRICS_PREFIX = "credess:metrics:";
 
     /**
      * Constructor injection for RedisTemplate.
@@ -307,5 +314,44 @@ public class RedisTaskQueueService {
         String refillRateKey = "credess:refill_rate:" + agentId;
         String value = (String) redisTemplate.opsForValue().get(refillRateKey);
         return value != null ? Double.parseDouble(value) : 0.0;
+    }
+
+    /**
+     * Burns the invariant transaction fee δt from the agent's balance.
+     * This method is strictly called ONLY upon a successful CAS task lock (Eq. 20).
+     * It also updates the global deflationary metric for system monitoring.
+     *
+     * @param agentId The unique identifier of the agent acquiring the task.
+     * @return The new balance of the agent after the fee is burned.
+     */
+    public double burnInvariantTransactionFee(String agentId) {
+        String balanceKey = BALANCE_PREFIX + agentId;
+        String globalBurnKey = METRICS_PREFIX + "total_burned";
+
+        // 1. Atomically deduct δt from the agent's liquid balance
+        Double newBalance = redisTemplate.opsForValue().increment(balanceKey, -DELTA_T);
+
+        // Prevent balance from dropping below zero (hard floor)
+        if (newBalance != null && newBalance < 0) {
+            redisTemplate.opsForValue().set(balanceKey, 0.0);
+            newBalance = 0.0;
+        }
+
+        // 2. Update the global deflationary metric (Eq. 34 feedback loop)
+        redisTemplate.opsForValue().increment(globalBurnKey, DELTA_T);
+
+        return newBalance != null ? newBalance : 0.0;
+    }
+
+    /**
+     * Retrieves the total amount of transaction fees (δt) burned across the entire system.
+     * Useful for monitoring the deflationary stabilizing shock and anti-spam efficiency.
+     *
+     * @return The cumulative sum of all burned invariant fees.
+     */
+    public double getTotalBurnedFees() {
+        String globalBurnKey = METRICS_PREFIX + "total_burned";
+        Double totalBurned = (Double) redisTemplate.opsForValue().get(globalBurnKey);
+        return totalBurned != null ? totalBurned : 0.0;
     }
 }
